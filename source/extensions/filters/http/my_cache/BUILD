@@ -18,6 +18,7 @@ envoy_cc_library(
     deps = [
         "//envoy/http:filter_interface",
         "//source/extensions/filters/http/common:pass_through_filter_lib",
+        "//source/common/http:header_map_lib",
         "@envoy_api//envoy/extensions/filters/http/my_cache/v3:pkg_cc_proto",
     ],
 )

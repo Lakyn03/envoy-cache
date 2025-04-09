@@ -14,11 +14,11 @@ SINGLETON_MANAGER_REGISTRATION(my_cache_singleton);
 Http::FilterFactoryCb MyCacheFilterFactory::createFilterFactoryFromProtoTyped(
     const envoy::extensions::filters::http::my_cache::v3::MyCacheConfig&, const std::string&,
     Server::Configuration::FactoryContext& context) {
-  std::shared_ptr<MyCache> cache =
-      context.serverFactoryContext().singletonManager().getTyped<MyCache>(
-          SINGLETON_MANAGER_REGISTERED_NAME(my_cache_singleton), &createMyCache);
-
-  return [cache](Http::FilterChainFactoryCallbacks& callbacks) -> void {
+    // get instance from the singletonManager, call my creatinon function
+  std::shared_ptr<MyCache> cache = context.serverFactoryContext().singletonManager().getTyped<MyCache>(
+                                    SINGLETON_MANAGER_REGISTERED_NAME(my_cache_singleton), &createMyCache); 
+  // returns a function generating filter instances
+  return [cache](Http::FilterChainFactoryCallbacks& callbacks) -> void { 
     callbacks.addStreamFilter(std::make_shared<MyCacheFilter>(cache));
   };
 }
