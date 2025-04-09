@@ -110,6 +110,8 @@ public:
   const std::string ExternalProcessing = "envoy.filters.http.ext_proc";
   // Set metadata filter
   const std::string SetMetadata = "envoy.filters.http.set_metadata";
+  // My cache filter
+  const std::string MyHttpCache = "envoy.filter.http.my_cache";
 };
 
 using HttpFilterNames = ConstSingleton<HttpFilterNameValues>;

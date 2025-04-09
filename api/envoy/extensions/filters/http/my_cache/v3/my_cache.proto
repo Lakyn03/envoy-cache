@@ -1,0 +1,12 @@
+syntax = "proto3";
+
+package envoy.extensions.filters.http.my_cache.v3;
+
+import "udpa/annotations/status.proto";
+import "udpa/annotations/versioning.proto";
+
+option (udpa.annotations.file_status).package_version_status = ACTIVE;
+
+message MyCacheConfig {
+  string message = 1;
+}
