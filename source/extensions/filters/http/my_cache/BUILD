@@ -11,8 +11,10 @@ envoy_extension_package()
 
 envoy_cc_library(
     name = "my_cache_filter_lib",
-    srcs = ["my_cache_filter.cc"],
-    hdrs = ["my_cache_filter.h"],
+    srcs = ["my_cache_filter.cc",
+            "my_cache.cc"],
+    hdrs = ["my_cache_filter.h",
+            "my_cache.h"],
     deps = [
         "//envoy/http:filter_interface",
         "//source/extensions/filters/http/common:pass_through_filter_lib",
