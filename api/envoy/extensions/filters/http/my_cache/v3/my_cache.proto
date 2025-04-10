@@ -8,5 +8,5 @@ import "udpa/annotations/versioning.proto";
 option (udpa.annotations.file_status).package_version_status = ACTIVE;
 
 message MyCacheConfig {
-  string message = 1;
+  uint32 buffer_size = 1;
 }

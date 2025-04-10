@@ -23,7 +23,8 @@ public:
 
 private:
   std::shared_ptr<MyCache> cache_; // reference to cache
-  std::string key_; // key of the incoming request
+  std::string host_;
+  std::string path_;
   bool responseFromCache_ = false; // whether the response is being served from cache or backend
   bool needsToBeCached_ = false;
   Http::ResponseHeaderMapPtr headers_; //headers of the response

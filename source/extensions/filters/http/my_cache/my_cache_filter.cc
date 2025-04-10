@@ -10,14 +10,13 @@ namespace MyCacheFilter {
 MyCacheFilter::MyCacheFilter(std::shared_ptr<MyCache> cache) : cache_(cache) {}
 
 Http::FilterHeadersStatus MyCacheFilter::decodeHeaders(Http::RequestHeaderMap& headers, bool) {
-    std::string host = std::string(headers.getHostValue());
-    std::string path = std::string(headers.getPathValue());
-    key_ = host + path;
+    host_ = std::string(headers.getHostValue());
+    path_ = std::string(headers.getPathValue());
 
-    Response* response = cache_->getCached(key_);
+    Response* response = cache_->getFromCache(host_, path_);
     // if cached, send response
     if(response) {
-        ENVOY_LOG_MISC(info, "Found in cache for key '{}'", key_);
+        ENVOY_LOG_MISC(info, "Found in cache for key '{}'", host_ + path_);
         responseFromCache_ = true;
 
         Http::ResponseHeaderMapPtr headers = Http::createHeaderMap<Http::ResponseHeaderMapImpl>(response->getHeaders());
@@ -46,11 +45,11 @@ Http::FilterHeadersStatus MyCacheFilter::encodeHeaders(Http::ResponseHeaderMap& 
 
 
     // if still not cached, start storing the response
-    if(!cache_->getCached(key_)) {
+    if(!cache_->getFromCache(host_, path_)) {
         needsToBeCached_ = true;
         if(end_stream) {
             // store response with no body
-            cache_->storeResponse(key_, Response(Http::createHeaderMap<Http::ResponseHeaderMapImpl>(headers), std::string()));
+            cache_->storeToCache(host_, path_, Response(Http::createHeaderMap<Http::ResponseHeaderMapImpl>(headers), std::string()));
         } else {
             // save just the headers for later
             headers_ = Http::createHeaderMap<Http::ResponseHeaderMapImpl>(headers);
@@ -71,7 +70,7 @@ Http::FilterDataStatus MyCacheFilter::encodeData(Buffer::Instance& data, bool en
         buffer_ += data.toString();
 
         if(end_stream) {
-            cache_->storeResponse(key_, Response(std::move(headers_), std::move(buffer_)));
+            cache_->storeToCache(host_, path_, Response(std::move(headers_), std::move(buffer_)));
         }
     }
     
