@@ -10,12 +10,15 @@
 #include "absl/synchronization/mutex.h"
 #include "absl/base/thread_annotations.h"
 #include "source/common/http/header_map_impl.h"
-//#include "source/extensions/filters/http/my_cache/my_cache_filter.h"
+
 
 namespace Envoy {
 namespace Extensions {
 namespace HttpFilters {
 namespace MyCacheFilter {
+// needed because of circular includes with my_cache_filter
+class MyCacheFilter; 
+
 
 // helper class for storing the response
 // TODO: later add some timestamp when the data go invalid
@@ -70,10 +73,19 @@ public:
   // saves response into the cache structure
   void storeToCache(std::string host, std::string path, Response response);
 
+  // checks if a request is on the waiting list
+  // returns true if request found, false if not -> then the filter should call notifyFilters when receiving the response
+  bool checkRequest(std::string key, std::shared_ptr<MyCacheFilter> filter);
+
+  // notifies all filters waiting for this response and deletes the list of waiters
+  void notifyAll(std::string key, std::shared_ptr<Response> response);
+
 private:
   int buffer_size_;
-  std::unordered_map<std::string, std::unique_ptr<RingBuffer>> hostToBuffer_ ABSL_GUARDED_BY(mutex_);
-  absl::Mutex mutex_;
+  std::unordered_map<std::string, std::unique_ptr<RingBuffer>> hostToBuffer_ ABSL_GUARDED_BY(hostToBufferMutex_);
+  absl::Mutex hostToBufferMutex_;
+  std::unordered_map<std::string, std::vector<std::shared_ptr<MyCacheFilter>>> waitingForResponses_ ABSL_GUARDED_BY(responsesMutex_); // key should be string host + path
+  absl::Mutex responsesMutex_;
 };
 
 // cache singleton class creation

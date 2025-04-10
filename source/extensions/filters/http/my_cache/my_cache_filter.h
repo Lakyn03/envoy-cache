@@ -10,13 +10,17 @@ namespace Extensions {
 namespace HttpFilters {
 namespace MyCacheFilter {
 
-class MyCacheFilter : public Http::PassThroughFilter {
+class MyCacheFilter : public Http::PassThroughFilter, public std::enable_shared_from_this<MyCacheFilter>{
 public:
   MyCacheFilter(std::shared_ptr<MyCache> cache);
   ~MyCacheFilter() override = default;
 
+  Envoy::Event::Dispatcher& getDispatcher();
+  
+  // sends cached (or coalesced) response
+  void sendResponse(std::shared_ptr<Response> response);
+
   Http::FilterHeadersStatus decodeHeaders(Http::RequestHeaderMap& headers, bool end_stream) override;
-  //Http::FilterDataStatus decodeData(Buffer::Instance& headers, bool end_stream) override; // no need as we can only cache GET requests
 
   Http::FilterHeadersStatus encodeHeaders(Http::ResponseHeaderMap& headers, bool end_stream) override;
   Http::FilterDataStatus encodeData(Buffer::Instance& headers, bool end_stream) override;
@@ -27,6 +31,7 @@ private:
   std::string path_;
   bool responseFromCache_ = false; // whether the response is being served from cache or backend
   bool needsToBeCached_ = false;
+  bool coalLeader_; // true if this filter is the one sending a coalesced request upstream and should notify others upon arrival
   Http::ResponseHeaderMapPtr headers_; //headers of the response
   std::string buffer_; // buffer for collecting the body of the reponse in case it is being sent in more chunks
 };

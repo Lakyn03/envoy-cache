@@ -1,4 +1,5 @@
 #include "source/extensions/filters/http/my_cache/my_cache.h"
+#include "source/extensions/filters/http/my_cache/my_cache_filter.h"
 
 namespace Envoy {
 namespace Extensions {
@@ -64,7 +65,7 @@ void RingBuffer::storeToBuffer(std::string path, Response response) {
 
 
 std::optional<Response> MyCache::getFromCache(std::string host, std::string path) {
-    absl::ReaderMutexLock lock(&mutex_);
+    absl::ReaderMutexLock lock(&hostToBufferMutex_);
     auto it = hostToBuffer_.find(host);
     if (it != hostToBuffer_.end()) {
         return it->second->getFromBuffer(path);
@@ -74,7 +75,7 @@ std::optional<Response> MyCache::getFromCache(std::string host, std::string path
 }
 
 void MyCache::storeToCache(std::string host, std::string path, Response response) {
-    absl::WriterMutexLock lock(&mutex_);
+    absl::WriterMutexLock lock(&hostToBufferMutex_);
 
     auto it = hostToBuffer_.find(host);
     if (it != hostToBuffer_.end()) {
@@ -83,6 +84,41 @@ void MyCache::storeToCache(std::string host, std::string path, Response response
         auto buffer = std::make_unique<RingBuffer>(buffer_size_);
         buffer->storeToBuffer(path, std::move(response));
         hostToBuffer_[host] = std::move(buffer);
+    }
+}
+
+bool MyCache::checkRequest(std::string key, std::shared_ptr<MyCacheFilter> filter) {
+    absl::MutexLock lock(&responsesMutex_);
+    auto it = waitingForResponses_.find(key);
+    if(it != waitingForResponses_.end()) {
+        it->second.push_back(filter);
+        return true;
+    } 
+
+    std::vector<std::shared_ptr<MyCacheFilter>> vec;
+    waitingForResponses_[key] = vec;
+    return false;
+}
+
+
+void MyCache::notifyAll(std::string key, std::shared_ptr<Response> response) {
+    std::vector<std::shared_ptr<MyCacheFilter>> vec;
+    {
+        absl::MutexLock lock(&responsesMutex_);
+        auto it = waitingForResponses_.find(key);
+        if(it == waitingForResponses_.end()) return; // should never happen
+
+        vec = std::move(it->second);
+        waitingForResponses_.erase(key);
+        // unlock before potentially long iteration
+    }
+
+    
+    for(auto filter : vec) {
+        // for each filter make sure the send is executed by its thread
+        filter->getDispatcher().post([filter, response]() {
+            filter->sendResponse(response);
+        });
     }
 }
 
