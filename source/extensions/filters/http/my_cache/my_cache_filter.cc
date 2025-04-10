@@ -13,14 +13,15 @@ Http::FilterHeadersStatus MyCacheFilter::decodeHeaders(Http::RequestHeaderMap& h
     host_ = std::string(headers.getHostValue());
     path_ = std::string(headers.getPathValue());
 
-    Response* response = cache_->getFromCache(host_, path_);
+    std::optional<Response> resp = cache_->getFromCache(host_, path_);
     // if cached, send response
-    if(response) {
+    if(resp.has_value()) {
+        const Response& response = resp.value();
         ENVOY_LOG_MISC(info, "Found in cache for key '{}'", host_ + path_);
         responseFromCache_ = true;
 
-        Http::ResponseHeaderMapPtr headers = Http::createHeaderMap<Http::ResponseHeaderMapImpl>(response->getHeaders());
-        Buffer::OwnedImpl body(response->getBody()); 
+        Http::ResponseHeaderMapPtr headers = Http::createHeaderMap<Http::ResponseHeaderMapImpl>(response.getHeaders());
+        Buffer::OwnedImpl body(response.getBody()); 
 
         //send headers
         decoder_callbacks_->encodeHeaders(std::move(headers), body.length() == 0, "cache_hit");

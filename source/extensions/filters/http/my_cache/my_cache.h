@@ -9,6 +9,7 @@
 #include "envoy/singleton/instance.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/base/thread_annotations.h"
+#include "source/common/http/header_map_impl.h"
 //#include "source/extensions/filters/http/my_cache/my_cache_filter.h"
 
 namespace Envoy {
@@ -22,6 +23,13 @@ class Response {
 public:
     Response() = default;
     Response(Http::ResponseHeaderMapPtr headers, std::string body);
+
+    //copy constructor
+    Response(const Response& other)
+        : headers_(Http::createHeaderMap<Http::ResponseHeaderMapImpl>(*other.headers_)),
+          body_(other.body_) {}
+    // = const      
+    Response& operator=(const Response& other);
 
     const Http::ResponseHeaderMap& getHeaders() const { return *headers_; }
     const std::string& getBody() const { return body_; }
@@ -39,7 +47,7 @@ public:
     RingBuffer(int capacity);
 
     
-    Response* getFromBuffer(std::string path);
+    std::optional<Response> getFromBuffer(const std::string& path);
     void storeToBuffer(std::string path, Response response);
 
 private:
@@ -57,7 +65,7 @@ public:
   MyCache(int buffer_size) : buffer_size_(buffer_size) {}
 
   // returns the cached response, or nullptr if id is not a stored key
-  Response* getFromCache(std::string host, std::string path);
+  std::optional<Response> getFromCache(std::string host, std::string path);
 
   // saves response into the cache structure
   void storeToCache(std::string host, std::string path, Response response);

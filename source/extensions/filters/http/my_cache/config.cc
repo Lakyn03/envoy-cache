@@ -25,8 +25,7 @@ Http::FilterFactoryCb MyCacheFilterFactory::createFilterFactoryFromProtoTyped(
 
   // safety bounds for each buffer size
   if(size < 1 || size > 1000000) {
-    throw Envoy::ProtoValidationException(
-      fmt::format("MyCacheConfig: message_number must be between 1 and 1000000, got {}", size));
+    throw Envoy::ProtoValidationException(fmt::format("MyCacheConfig: message_number must be between 1 and 1000000, got {}", size));
   }
 
 

@@ -6,23 +6,31 @@ namespace HttpFilters {
 namespace MyCacheFilter {
 
 
+// we want to make a deep copy of the headers
+Response::Response(const Http::ResponseHeaderMapPtr headers, std::string body)
+    : headers_(Http::createHeaderMap<Http::ResponseHeaderMapImpl>(*headers)),
+      body_(std::move(body)) {}
 
-Response::Response(Http::ResponseHeaderMapPtr headers, std::string body) : headers_(std::move(headers)), body_(body) {}
+Response& Response::operator=(const Response& other) {
+    headers_ = Http::createHeaderMap<Http::ResponseHeaderMapImpl>(*other.headers_);
+    body_ = other.body_;
+    return *this;
+}
+
 
 RingBuffer::RingBuffer(int capacity) {
     capacity_ = capacity;
     buffer_.resize(capacity);
 }
 
-
-Response* RingBuffer::getFromBuffer(std::string path) {
+std::optional<Response> RingBuffer::getFromBuffer(const std::string& path) {
     absl::ReaderMutexLock lock(&BufMutex_);
     auto it = pathToId_.find(path);
     if (it != pathToId_.end()) {
-        return &buffer_[it->second];
+        return buffer_[it->second];
     }
 
-    return nullptr;
+    return std::nullopt;
 }
 
 void RingBuffer::storeToBuffer(std::string path, Response response) {
@@ -55,14 +63,14 @@ void RingBuffer::storeToBuffer(std::string path, Response response) {
 
 
 
-Response* MyCache::getFromCache(std::string host, std::string path) {
+std::optional<Response> MyCache::getFromCache(std::string host, std::string path) {
     absl::ReaderMutexLock lock(&mutex_);
     auto it = hostToBuffer_.find(host);
     if (it != hostToBuffer_.end()) {
         return it->second->getFromBuffer(path);
     }
 
-    return nullptr;
+    return std::nullopt;
 }
 
 void MyCache::storeToCache(std::string host, std::string path, Response response) {
