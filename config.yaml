@@ -57,6 +57,9 @@ static_resources:
                       - match: { prefix: "/app2"}
                         route:
                           cluster: app2_cluster
+                      - match: { prefix: "/big"}
+                        route:
+                          cluster: allbackend_cluster
                       - match: { prefix: "/"}
                         route:
                           cluster: allbackend_cluster

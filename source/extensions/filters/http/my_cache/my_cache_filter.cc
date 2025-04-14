@@ -7,11 +7,17 @@ namespace Extensions {
 namespace HttpFilters {
 namespace MyCacheFilter {
 
-MyCacheFilter::MyCacheFilter(std::shared_ptr<MyCache> cache) : cache_(cache) {}
+MyCacheFilter::MyCacheFilter(std::shared_ptr<MyCache> cache) : cache_(cache) {
+    sharedBuf_ = std::make_shared<Buffer::OwnedImpl>();
+}
 
 
 Envoy::Event::Dispatcher& MyCacheFilter::getDispatcher() {
     return decoder_callbacks_->dispatcher();
+}
+
+bool MyCacheFilter::headersSent() {
+    return headersSent_;
 }
 
 
@@ -27,6 +33,25 @@ void MyCacheFilter::sendResponse(std::shared_ptr<Response> response) {
         decoder_callbacks_->encodeData(body, true);
     }
 }
+
+
+void MyCacheFilter::sendHeaders(Http::ResponseHeaderMap& headers, bool end_stream) {
+    if(headersSent_) return;
+
+    headersSent_ = true;
+
+    Http::ResponseHeaderMapPtr headersCopy = Http::createHeaderMap<Http::ResponseHeaderMapImpl>(headers);
+
+    decoder_callbacks_->encodeHeaders(std::move(headersCopy), end_stream, "");
+}
+
+
+void MyCacheFilter::sendData(Buffer::Instance& data, bool end_stream) {
+    Buffer::OwnedImpl body(data); 
+
+    decoder_callbacks_->encodeData(body, end_stream);
+}
+
 
 Http::FilterHeadersStatus MyCacheFilter::decodeHeaders(Http::RequestHeaderMap& headers, bool) {
     host_ = std::string(headers.getHostValue());
@@ -68,13 +93,13 @@ Http::FilterHeadersStatus MyCacheFilter::encodeHeaders(Http::ResponseHeaderMap& 
             // store response with no body
             Response response = Response(Http::createHeaderMap<Http::ResponseHeaderMapImpl>(headers), std::string());
             cache_->storeToCache(host_, path_, response);
-
-            if(coalLeader_) {
-                cache_->notifyAll(host_ + path_, std::make_shared<Response>(response));
-            }
         } else {
             // save just the headers for later
             headers_ = Http::createHeaderMap<Http::ResponseHeaderMapImpl>(headers);
+        }
+
+        if(coalLeader_) {
+            cache_->notifyAllHeaders(host_ + path_, headers, end_stream);
         }
     }
     
@@ -90,15 +115,16 @@ Http::FilterDataStatus MyCacheFilter::encodeData(Buffer::Instance& data, bool en
     // store the body
     if(needsToBeCached_) {
         buffer_ += data.toString();
+        sharedBuf_->add(data);
 
         if(end_stream) {
             Response response = Response(std::move(headers_), std::move(buffer_));
             cache_->storeToCache(host_, path_, response);
-
-            if(coalLeader_) {
-                cache_->notifyAll(host_ + path_, std::make_shared<Response>(response));
-            }
         }
+    }
+
+    if(coalLeader_) {
+        cache_->notifyAllData(host_ + path_, *headers_, sharedBuf_, data, end_stream);
     }
     
     return Http::FilterDataStatus::Continue;
