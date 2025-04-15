@@ -8,7 +8,7 @@ namespace HttpFilters {
 namespace MyCacheFilter {
 
 MyCacheFilter::MyCacheFilter(std::shared_ptr<MyCache> cache) : cache_(cache) {
-    sharedBuf_ = std::make_shared<Buffer::OwnedImpl>();
+    buffer_ = std::make_shared<Buffer::OwnedImpl>();
 }
 
 
@@ -56,6 +56,15 @@ void MyCacheFilter::sendData(Buffer::Instance& data, bool end_stream) {
 Http::FilterHeadersStatus MyCacheFilter::decodeHeaders(Http::RequestHeaderMap& headers, bool) {
     host_ = std::string(headers.getHostValue());
     path_ = std::string(headers.getPathValue());
+    key_ = host_ + path_;
+
+    // check no-cache header
+    auto cacheControl = headers.get(Http::LowerCaseString("cache-control"));
+    if(!cacheControl.empty() && absl::StrContains(cacheControl[0]->value().getStringView(), "no-cache")) {
+        return Http::FilterHeadersStatus::Continue;
+    }
+    
+
 
     std::optional<Response> response = cache_->getFromCache(host_, path_);
     // if cached, send response
@@ -68,7 +77,7 @@ Http::FilterHeadersStatus MyCacheFilter::decodeHeaders(Http::RequestHeaderMap& h
         return Http::FilterHeadersStatus::StopIteration;
     }
 
-    if(cache_->checkRequest(host_ + path_, shared_from_this())) {
+    if(cache_->checkRequest(key_, shared_from_this())) {
         // request found, filter is in line, so sleep
         return Http::FilterHeadersStatus::StopIteration;
     }
@@ -91,7 +100,7 @@ Http::FilterHeadersStatus MyCacheFilter::encodeHeaders(Http::ResponseHeaderMap& 
         needsToBeCached_ = true;
         if(end_stream) {
             // store response with no body
-            Response response = Response(Http::createHeaderMap<Http::ResponseHeaderMapImpl>(headers), std::string());
+            Response response = Response(Http::createHeaderMap<Http::ResponseHeaderMapImpl>(headers), Buffer::OwnedImpl());
             cache_->storeToCache(host_, path_, response);
         } else {
             // save just the headers for later
@@ -114,17 +123,16 @@ Http::FilterDataStatus MyCacheFilter::encodeData(Buffer::Instance& data, bool en
 
     // store the body
     if(needsToBeCached_) {
-        buffer_ += data.toString();
-        sharedBuf_->add(data);
+        buffer_->add(data);
 
         if(end_stream) {
-            Response response = Response(std::move(headers_), std::move(buffer_));
+            Response response = Response(std::move(headers_), *buffer_);
             cache_->storeToCache(host_, path_, response);
         }
     }
 
     if(coalLeader_) {
-        cache_->notifyAllData(host_ + path_, *headers_, sharedBuf_, data, end_stream);
+        cache_->notifyAllData(host_ + path_, *headers_, buffer_, data, end_stream);
     }
     
     return Http::FilterDataStatus::Continue;

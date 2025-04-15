@@ -35,13 +35,13 @@ private:
   std::shared_ptr<MyCache> cache_; // reference to cache
   std::string host_;
   std::string path_;
+  std::string key_;
   bool responseFromCache_ = false; // whether the response is being served from cache or backend
   bool needsToBeCached_ = false;
   bool coalLeader_; // true if this filter is the one sending a coalesced request upstream and should notify others upon arrival
   bool headersSent_ = false;
   Http::ResponseHeaderMapPtr headers_; //headers of the response
-  std::string buffer_; // buffer for collecting the body of the reponse in case it is being sent in more chunks
-  std::shared_ptr<Buffer::Instance> sharedBuf_;
+  std::shared_ptr<Buffer::Instance> buffer_;
 };
 
 } // namespace MyCacheFilter

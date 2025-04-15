@@ -11,6 +11,7 @@
 #include "absl/base/thread_annotations.h"
 #include "source/common/http/header_map_impl.h"
 #include "envoy/buffer/buffer.h"
+#include "source/common/buffer/buffer_impl.h"
 
 
 namespace Envoy {
@@ -21,26 +22,26 @@ namespace MyCacheFilter {
 class MyCacheFilter;
 
 // helper class for storing the response
-// TODO: later add some timestamp when the data go invalid
 class Response {
 public:
   Response() = default;
-  Response(Http::ResponseHeaderMapPtr headers, std::string body);
+  Response(Http::ResponseHeaderMapPtr headers, const Buffer::Instance& body);
 
   // copy constructor
   Response(const Response& other)
-      : headers_(Http::createHeaderMap<Http::ResponseHeaderMapImpl>(*other.headers_)),
-        body_(other.body_) {}
+      : headers_(Http::createHeaderMap<Http::ResponseHeaderMapImpl>(*other.headers_)) {
+          body_.add(other.body_);
+        }
   // = const
   Response& operator=(const Response& other);
 
   // we cannot return pointer, because ResponseHeaderMapPtr is a unique ptr
   const Http::ResponseHeaderMap& getHeaders() const { return *headers_; }
-  const std::string& getBody() const { return body_; }
+  const Buffer::Instance& getBody() const { return body_; }
 
 private:
   Http::ResponseHeaderMapPtr headers_;
-  std::string body_;
+  Buffer::OwnedImpl body_;
 };
 
 // helper class for storing one RingBuffer
@@ -53,7 +54,7 @@ public:
   void storeToBuffer(std::string path, Response response);
 
 private:
-  int capacity_; // default value if nothing is provided
+  int capacity_;
   int curSize_ = 0;
   int startId_ = 0;
   std::vector<Response> buffer_ ABSL_GUARDED_BY(BufMutex_);

@@ -7,13 +7,14 @@ namespace HttpFilters {
 namespace MyCacheFilter {
 
 // we want to make a deep copy of the headers
-Response::Response(const Http::ResponseHeaderMapPtr headers, std::string body)
-    : headers_(Http::createHeaderMap<Http::ResponseHeaderMapImpl>(*headers)),
-      body_(std::move(body)) {}
+Response::Response(const Http::ResponseHeaderMapPtr headers, const Buffer::Instance& body)
+    : headers_(Http::createHeaderMap<Http::ResponseHeaderMapImpl>(*headers)) {
+        body_.add(body);
+    }
 
 Response& Response::operator=(const Response& other) {
   headers_ = Http::createHeaderMap<Http::ResponseHeaderMapImpl>(*other.headers_);
-  body_ = other.body_;
+  body_.add(other.body_);
   return *this;
 }
 
