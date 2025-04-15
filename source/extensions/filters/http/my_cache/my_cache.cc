@@ -14,6 +14,7 @@ Response::Response(const Http::ResponseHeaderMapPtr headers, const Buffer::Insta
 
 Response& Response::operator=(const Response& other) {
   headers_ = Http::createHeaderMap<Http::ResponseHeaderMapImpl>(*other.headers_);
+  body_ = Buffer::OwnedImpl();
   body_.add(other.body_);
   return *this;
 }
@@ -42,14 +43,10 @@ void RingBuffer::storeToBuffer(std::string path, Response response) {
     id = startId_;
     startId_ = (startId_ + 1) % capacity_;
 
-    // TODO
-    // problem that I need to remove the old mapping from the map, but cant find it in O(1)
-    // stupid O(n) solution, try to replace with a map other way around?
-    for (auto it = pathToId_.begin(); it != pathToId_.end(); ++it) {
-      if (it->second == id) {
-        pathToId_.erase(it);
-        break;
-      }
+    auto oldPath = idToPath_.find(id);
+    if(oldPath != idToPath_.end()) {
+        pathToId_.erase(oldPath->second);
+        idToPath_.erase(id);
     }
   } else {
     id = (startId_ + curSize_) % capacity_;
@@ -59,6 +56,7 @@ void RingBuffer::storeToBuffer(std::string path, Response response) {
   // now replace the one on id with the new response, update the map accordingly
   buffer_[id] = std::move(response);
   pathToId_[path] = id;
+  idToPath_[id] = path;
 }
 
 std::optional<Response> MyCache::getFromCache(std::string host, std::string path) {

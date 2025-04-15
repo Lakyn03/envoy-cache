@@ -59,6 +59,7 @@ private:
   int startId_ = 0;
   std::vector<Response> buffer_ ABSL_GUARDED_BY(BufMutex_);
   std::unordered_map<std::string, int> pathToId_ ABSL_GUARDED_BY(BufMutex_);
+  std::unordered_map<int, std::string> idToPath_ ABSL_GUARDED_BY(BufMutex_);
   absl::Mutex BufMutex_;
 };
 
