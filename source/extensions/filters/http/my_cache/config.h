@@ -11,6 +11,7 @@ namespace Extensions {
 namespace HttpFilters {
 namespace MyCacheFilter {
 
+// factory class needed to create MyCacheFilter instances by the filter manager
 class MyCacheFilterFactory : public Envoy::Extensions::HttpFilters::Common::FactoryBase<
                                  envoy::extensions::filters::http::my_cache::v3::MyCacheConfig> {
 public:

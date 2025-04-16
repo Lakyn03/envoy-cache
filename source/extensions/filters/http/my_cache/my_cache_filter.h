@@ -17,30 +17,32 @@ public:
   MyCacheFilter(std::shared_ptr<MyCache> cache);
   ~MyCacheFilter() override = default;
 
-  Envoy::Event::Dispatcher& getDispatcher();
-  bool headersSent();
+  // needed in MyChache to post to thread managing this filter
+  Envoy::Event::Dispatcher& getDispatcher() const;
   
-  // sends cached (or coalesced) response
+  // sends cached response
   void sendResponse(std::shared_ptr<Response> response);
-
   void sendHeaders(Http::ResponseHeaderMap& headers, bool end_stream);
-  void sendData(Buffer::Instance& data, bool end_stream);
+  void sendData(const Buffer::Instance& data, bool end_stream);
 
   Http::FilterHeadersStatus decodeHeaders(Http::RequestHeaderMap& headers, bool end_stream) override;
-
   Http::FilterHeadersStatus encodeHeaders(Http::ResponseHeaderMap& headers, bool end_stream) override;
   Http::FilterDataStatus encodeData(Buffer::Instance& headers, bool end_stream) override;
 
 private:
-  std::shared_ptr<MyCache> cache_; // reference to cache
+  std::shared_ptr<MyCache> cache_;
+  std::shared_ptr<Coalescing> coal_;
   std::string host_;
   std::string path_;
+  // key_ + host_ used for coalescing
   std::string key_;
-  bool responseFromCache_ = false; // whether the response is being served from cache or backend
+  // whether the response is being served from cache or backend
+  bool responseFromCache_ = false; 
+  // whether the response has been cached in the meantime or still needs to be stored
   bool needsToBeCached_ = false;
-  bool coalLeader_; // true if this filter is the one sending a coalesced request upstream and should notify others upon arrival
-  bool headersSent_ = false;
-  Http::ResponseHeaderMapPtr headers_; //headers of the response
+  // true if this filter is the one sending a coalesced request upstream and should notify others upon arrival
+  bool coalLeader_ = false; 
+  Http::ResponseHeaderMapPtr headers_;
   std::shared_ptr<Buffer::Instance> buffer_;
 };
 

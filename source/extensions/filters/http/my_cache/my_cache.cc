@@ -31,11 +31,10 @@ std::optional<Response> RingBuffer::getFromBuffer(const std::string& path) {
     // makes a copy
     return buffer_[it->second];
   }
-
   return std::nullopt;
 }
 
-void RingBuffer::storeToBuffer(std::string path, Response response) {
+void RingBuffer::storeToBuffer(const std::string& path, Response response) {
   absl::WriterMutexLock lock(&BufMutex_);
   int id;
   // if full, replace start and move it
@@ -43,6 +42,7 @@ void RingBuffer::storeToBuffer(std::string path, Response response) {
     id = startId_;
     startId_ = (startId_ + 1) % capacity_;
 
+    // delete the old mappings
     auto oldPath = idToPath_.find(id);
     if(oldPath != idToPath_.end()) {
         pathToId_.erase(oldPath->second);
@@ -59,101 +59,131 @@ void RingBuffer::storeToBuffer(std::string path, Response response) {
   idToPath_[id] = path;
 }
 
-std::optional<Response> MyCache::getFromCache(std::string host, std::string path) {
+void Coalescing::setHeaders(Http::ResponseHeaderMapPtr headers) {
+  absl::MutexLock lock(&mutex_);
+  if (!headers_) {
+    headers_ = std::move(headers);
+  }
+}
+
+void Coalescing::addData(const Buffer::Instance& data) {
+  absl::MutexLock lock(&mutex_);
+  buffer_.add(data);
+}
+
+void Coalescing::addFilter(std::shared_ptr<MyCacheFilter> filter) {
+  absl::MutexLock lock(&mutex_);
+  auto filterInfo = std::make_shared<FilterInfo>();
+  filterInfo->filter = filter;
+  filterInfo->offset = 0;
+  filterInfo->headersSent = false;
+  filters_.push_back(filterInfo);
+}
+
+
+void Coalescing::send(bool end_stream) {
+  absl::MutexLock lock(&mutex_);
+  // copy buffer
+  auto bufferCopy = std::make_shared<Buffer::OwnedImpl>();
+  bufferCopy->add(buffer_);
+
+  for (auto& filterInfo : filters_) {
+    auto filter = filterInfo->filter;
+
+    // check if headers already sent
+    bool need_send_headers = false;
+    if (!filterInfo->headersSent) {
+      filterInfo->headersSent = true;
+      need_send_headers = true;
+    }
+
+    // check how much data needs to be sent
+    uint64_t available = bufferCopy->length();
+    uint64_t offset = filterInfo->offset;
+    uint64_t sendSize = 0;
+    if (available > offset) {
+      sendSize = available - offset;
+      filterInfo->offset += sendSize;
+    }
+
+    // copy the chunk that needs to be sent
+    Buffer::OwnedImpl chunk;
+    if (sendSize > 0) {
+      //raw memory space to store the copied data
+      std::vector<char> temp(sendSize);
+      bufferCopy->copyOut(offset, sendSize, temp.data());
+      // add to the chunk
+      chunk.add(temp.data(), sendSize);
+    }
+
+    auto headersCopy = Http::createHeaderMap<Http::ResponseHeaderMapImpl>(*headers_);
+
+    // post to the thread event pool, all values that are given to the lambda need to be copied, because it might be executed later and objects could be already deleted
+    filter->getDispatcher().post([filter, need_send_headers, headersCopy = std::move(headersCopy),
+                                  haveDataToSend = (sendSize > 0), chunk = std::move(chunk), end_stream]() {
+        // security check to not get segfault
+        if (!filter) {
+          return;
+        }
+        if (need_send_headers) {
+          filter->sendHeaders(*headersCopy, false);
+        }
+        if (haveDataToSend) {
+          filter->sendData(chunk, end_stream);
+        } else if (end_stream) {
+          Buffer::OwnedImpl empty;
+          filter->sendData(empty, true);
+        }
+      }
+    );
+  }
+}
+
+
+std::optional<Response> MyCache::getFromCache(const std::string& host, const std::string& path) {
   absl::ReaderMutexLock lock(&hostToBufferMutex_);
   auto it = hostToBuffer_.find(host);
   if (it != hostToBuffer_.end()) {
     return it->second->getFromBuffer(path);
   }
-
   return std::nullopt;
 }
 
-void MyCache::storeToCache(std::string host, std::string path, Response response) {
+void MyCache::storeToCache(const std::string& host, const std::string& path, Response response) {
   absl::WriterMutexLock lock(&hostToBufferMutex_);
 
   auto it = hostToBuffer_.find(host);
   if (it != hostToBuffer_.end()) {
     it->second->storeToBuffer(path, std::move(response));
   } else {
+    // create new buffer for this host
     auto buffer = std::make_unique<RingBuffer>(buffer_size_);
     buffer->storeToBuffer(path, std::move(response));
     hostToBuffer_[host] = std::move(buffer);
   }
 }
 
-bool MyCache::checkRequest(std::string key, std::shared_ptr<MyCacheFilter> filter) {
-  absl::MutexLock lock(&responsesMutex_);
-  auto it = waitingForResponses_.find(key);
-  if (it != waitingForResponses_.end()) {
-    it->second.push_back(filter);
-    return true;
+
+std::shared_ptr<Coalescing> MyCache::checkRequest(const std::string& key, std::shared_ptr<MyCacheFilter> filter) {
+  absl::MutexLock lock(&coalescingMutex_);
+  auto it = coalescing_map_.find(key);
+
+  // add new filter to waiting
+  if (it != coalescing_map_.end()) {
+    it->second->addFilter(filter);
+    return nullptr;
   }
 
-  waitingForResponses_[key] = std::vector<std::shared_ptr<MyCacheFilter>>();
-  return false;
+  //create new coalescing object
+  std::shared_ptr<Coalescing> coal = std::make_shared<Coalescing>();
+  coalescing_map_[key] = coal;
+  return coal;
 }
 
-void MyCache::notifyAllHeaders(std::string key, Http::ResponseHeaderMap& headers, bool end_stream) {
-  std::vector<std::shared_ptr<MyCacheFilter>> filters;
 
-  {
-    absl::WriterMutexLock lock(&responsesMutex_);
-    auto it = waitingForResponses_.find(key);
-    if (it == waitingForResponses_.end())
-      return;
-
-    filters = it->second;
-
-    if (end_stream) {
-      waitingForResponses_.erase(it);
-    }
-  }
-
-  for (auto& filter : filters) {
-    auto headers_copy = Http::createHeaderMap<Http::ResponseHeaderMapImpl>(headers);
-    filter->getDispatcher().post([filter, end_stream, headers_copy = std::move(headers_copy)]() {
-      filter->sendHeaders(*headers_copy, end_stream);
-    });
-  }
-}
-
-void MyCache::notifyAllData(std::string key, Http::ResponseHeaderMap& headers,
-                            std::shared_ptr<Buffer::Instance> sharedBuf, Buffer::Instance& chunk,
-                            bool end_stream) {
-  std::vector<std::shared_ptr<MyCacheFilter>> filters;
-  {
-    absl::WriterMutexLock lock(&responsesMutex_);
-    auto it = waitingForResponses_.find(key);
-    if (it == waitingForResponses_.end())
-      return;
-
-    filters = it->second;
-
-    if (end_stream) {
-      waitingForResponses_.erase(key);
-    }
-  }
-
-  for (auto& filter : filters) {
-    auto chunkCopy = std::make_shared<Buffer::OwnedImpl>(chunk);
-    filter->getDispatcher().post([filter, &headers, chunkCopy, end_stream, sharedBuf]() {
-      if (!filter->headersSent()) {
-        auto bufCopy = std::make_shared<Buffer::OwnedImpl>();
-        bufCopy->add(*sharedBuf);
-        auto headersCopy = Http::createHeaderMap<Http::ResponseHeaderMapImpl>(headers);
-        filter->sendHeaders(*headersCopy, end_stream);
-
-        filter->sendData(*bufCopy, false);
-      } else {
-        filter->sendData(*chunkCopy, end_stream);
-      }
-    });
-  }
-}
-
-std::shared_ptr<Singleton::Instance> createMyCache(int size) {
-  return std::make_shared<MyCache>(size);
+void MyCache::deleteCoal(const std::string& key) {
+    absl::MutexLock lock(&coalescingMutex_);
+    coalescing_map_.erase(key);
 }
 
 } // namespace MyCacheFilter

@@ -21,12 +21,12 @@ namespace MyCacheFilter {
 // needed because of circular includes with my_cache_filter
 class MyCacheFilter;
 
-// helper class for storing the response
+
+// class for storing a response (headers, body)
 class Response {
 public:
   Response() = default;
   Response(Http::ResponseHeaderMapPtr headers, const Buffer::Instance& body);
-
   // copy constructor
   Response(const Response& other)
       : headers_(Http::createHeaderMap<Http::ResponseHeaderMapImpl>(*other.headers_)) {
@@ -35,6 +35,7 @@ public:
   // = const
   Response& operator=(const Response& other);
 
+  // returns the headers for this response
   // we cannot return pointer, because ResponseHeaderMapPtr is a unique ptr
   const Http::ResponseHeaderMap& getHeaders() const { return *headers_; }
   const Buffer::Instance& getBody() const { return body_; }
@@ -44,23 +45,50 @@ private:
   Buffer::OwnedImpl body_;
 };
 
-// helper class for storing one RingBuffer
-// each one stores requests to one host
+// class for storing one RingBuffer storing all cached requests to one host
 class RingBuffer {
 public:
   RingBuffer(int capacity);
 
   std::optional<Response> getFromBuffer(const std::string& path);
-  void storeToBuffer(std::string path, Response response);
+  void storeToBuffer(const std::string& path, Response response);
 
 private:
   int capacity_;
   int curSize_ = 0;
   int startId_ = 0;
   std::vector<Response> buffer_ ABSL_GUARDED_BY(BufMutex_);
+  // for O(1) getFromBuffer
   std::unordered_map<std::string, int> pathToId_ ABSL_GUARDED_BY(BufMutex_);
+  // for O(1) storToBuffer even when the buffer is full
   std::unordered_map<int, std::string> idToPath_ ABSL_GUARDED_BY(BufMutex_);
   absl::Mutex BufMutex_;
+};
+
+// class for storing all coalesced requests waiting for the same response
+// manages each filter's offset, makes sure to send headers exactly once
+class Coalescing {
+public:
+  Coalescing() = default;
+
+  void setHeaders(Http::ResponseHeaderMapPtr headers);
+  void addData(const Buffer::Instance& data);
+  // sends new data to each filter according to what they already received
+  void send(bool end_stream);
+  void addFilter(std::shared_ptr<MyCacheFilter> filter);
+
+  // stores info about one waiting filter
+  struct FilterInfo {
+    std::shared_ptr<MyCacheFilter> filter;
+    uint64_t offset = 0;
+    bool headersSent = false;
+  };
+
+private:
+  Http::ResponseHeaderMapPtr headers_ ABSL_GUARDED_BY(mutex_);
+  Buffer::OwnedImpl buffer_ ABSL_GUARDED_BY(mutex_);
+  std::vector<std::shared_ptr<FilterInfo>> filters_ ABSL_GUARDED_BY(mutex_);
+  absl::Mutex mutex_;
 };
 
 class MyCache : public Singleton::Instance {
@@ -68,34 +96,20 @@ public:
   MyCache(int buffer_size) : buffer_size_(buffer_size) {}
 
   // returns the cached response, or nullptr if id is not a stored key
-  std::optional<Response> getFromCache(std::string host, std::string path);
-
+  std::optional<Response> getFromCache(const std::string& host, const std::string& path);
   // saves response into the cache structure
-  void storeToCache(std::string host, std::string path, Response response);
-
-  // checks if a request is on the waiting list
-  // returns true if request found, false if not -> then the filter should call notifyFilters when
-  // receiving the response
-  bool checkRequest(std::string key, std::shared_ptr<MyCacheFilter> filter);
-
-  // sends headers to all filters waiting for an answer
-  void notifyAllHeaders(std::string key, Http::ResponseHeaderMap& headers, bool end_stream);
-
-  // sends data chunk to all filters waiting for an answer, makes sure all previous chunks and headers were received
-  void notifyAllData(std::string key, Http::ResponseHeaderMap& headers, std::shared_ptr<Buffer::Instance> sharedBuf, Buffer::Instance& chunk, bool end_stream);
+  void storeToCache(const std::string& host, const std::string& path, Response response);
+  // used for coalescing, checks whether this is the first time this request was made or whether others are already waiting
+  std::shared_ptr<Coalescing> checkRequest(const std::string& key, std::shared_ptr<MyCacheFilter> filter);
+  void deleteCoal(const std::string& key);
 
 private:
   int buffer_size_;
-  std::unordered_map<std::string, std::unique_ptr<RingBuffer>>
-      hostToBuffer_ ABSL_GUARDED_BY(hostToBufferMutex_);
+  std::unordered_map<std::string, std::unique_ptr<RingBuffer>>hostToBuffer_ ABSL_GUARDED_BY(hostToBufferMutex_);
   absl::Mutex hostToBufferMutex_;
-  std::unordered_map<std::string, std::vector<std::shared_ptr<MyCacheFilter>>>
-      waitingForResponses_ ABSL_GUARDED_BY(responsesMutex_); // key should be string host + path
-  absl::Mutex responsesMutex_;
+  std::unordered_map<std::string, std::shared_ptr<Coalescing>> coalescing_map_ ABSL_GUARDED_BY(coalescingMutex_);
+  absl::Mutex coalescingMutex_;
 };
-
-// cache singleton class creation
-std::shared_ptr<Singleton::Instance> createMyCache(int size);
 
 } // namespace MyCacheFilter
 } // namespace HttpFilters

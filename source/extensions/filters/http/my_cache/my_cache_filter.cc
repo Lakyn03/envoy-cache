@@ -11,47 +11,29 @@ MyCacheFilter::MyCacheFilter(std::shared_ptr<MyCache> cache) : cache_(cache) {
     buffer_ = std::make_shared<Buffer::OwnedImpl>();
 }
 
-
-Envoy::Event::Dispatcher& MyCacheFilter::getDispatcher() {
+Envoy::Event::Dispatcher& MyCacheFilter::getDispatcher() const {
     return decoder_callbacks_->dispatcher();
 }
-
-bool MyCacheFilter::headersSent() {
-    return headersSent_;
-}
-
 
 void MyCacheFilter::sendResponse(std::shared_ptr<Response> response) {
     Http::ResponseHeaderMapPtr headers = Http::createHeaderMap<Http::ResponseHeaderMapImpl>(response->getHeaders());
     Buffer::OwnedImpl body(response->getBody()); 
 
-    //send headers
     decoder_callbacks_->encodeHeaders(std::move(headers), body.length() == 0, "");
-        
-    //send body 
     if(body.length() != 0) {
         decoder_callbacks_->encodeData(body, true);
     }
 }
 
-
 void MyCacheFilter::sendHeaders(Http::ResponseHeaderMap& headers, bool end_stream) {
-    if(headersSent_) return;
-
-    headersSent_ = true;
-
     Http::ResponseHeaderMapPtr headersCopy = Http::createHeaderMap<Http::ResponseHeaderMapImpl>(headers);
-
     decoder_callbacks_->encodeHeaders(std::move(headersCopy), end_stream, "");
 }
 
-
-void MyCacheFilter::sendData(Buffer::Instance& data, bool end_stream) {
+void MyCacheFilter::sendData(const Buffer::Instance& data, bool end_stream) {
     Buffer::OwnedImpl body(data); 
-
     decoder_callbacks_->encodeData(body, end_stream);
 }
-
 
 Http::FilterHeadersStatus MyCacheFilter::decodeHeaders(Http::RequestHeaderMap& headers, bool) {
     host_ = std::string(headers.getHostValue());
@@ -63,21 +45,18 @@ Http::FilterHeadersStatus MyCacheFilter::decodeHeaders(Http::RequestHeaderMap& h
     if(!cacheControl.empty() && absl::StrContains(cacheControl[0]->value().getStringView(), "no-cache")) {
         return Http::FilterHeadersStatus::Continue;
     }
-    
-
 
     std::optional<Response> response = cache_->getFromCache(host_, path_);
     // if cached, send response
     if(response.has_value()) {
-        //ENVOY_LOG_MISC(info, "Found in cache for key '{}'", host_ + path_);
         responseFromCache_ = true;
         sendResponse(std::make_shared<Response>(response.value()));
-    
-        //stop iteration
+        //stop the filter chain
         return Http::FilterHeadersStatus::StopIteration;
     }
 
-    if(cache_->checkRequest(key_, shared_from_this())) {
+    coal_ = cache_->checkRequest(key_, shared_from_this());
+    if(coal_ == nullptr) {
         // request found, filter is in line, so sleep
         return Http::FilterHeadersStatus::StopIteration;
     }
@@ -88,12 +67,22 @@ Http::FilterHeadersStatus MyCacheFilter::decodeHeaders(Http::RequestHeaderMap& h
     return Http::FilterHeadersStatus::Continue;
 }
 
-
 Http::FilterHeadersStatus MyCacheFilter::encodeHeaders(Http::ResponseHeaderMap& headers, bool end_stream) {
     if(responseFromCache_) {
         return Http::FilterHeadersStatus::Continue;
     }
 
+    headers_ = Http::createHeaderMap<Http::ResponseHeaderMapImpl>(headers);
+
+    // if coal leader, send to others
+    if(coalLeader_) {
+        coal_->setHeaders(Http::createHeaderMap<Http::ResponseHeaderMapImpl>(headers));
+        coal_->send(end_stream);
+
+        if(end_stream) {
+            cache_->deleteCoal(key_);
+        }
+    }
 
     // if still not cached, start storing the response
     if(!cache_->getFromCache(host_, path_)) {
@@ -102,39 +91,36 @@ Http::FilterHeadersStatus MyCacheFilter::encodeHeaders(Http::ResponseHeaderMap& 
             // store response with no body
             Response response = Response(Http::createHeaderMap<Http::ResponseHeaderMapImpl>(headers), Buffer::OwnedImpl());
             cache_->storeToCache(host_, path_, response);
-        } else {
-            // save just the headers for later
-            headers_ = Http::createHeaderMap<Http::ResponseHeaderMapImpl>(headers);
-        }
-
-        if(coalLeader_) {
-            cache_->notifyAllHeaders(host_ + path_, headers, end_stream);
         }
     }
     
     return Http::FilterHeadersStatus::Continue;
 }
 
-
 Http::FilterDataStatus MyCacheFilter::encodeData(Buffer::Instance& data, bool end_stream) {
     if(responseFromCache_) {
         return Http::FilterDataStatus::Continue;
     }
 
+    buffer_->add(data);
+
+    // if coal leader, send to others
+    if(coalLeader_) {
+        coal_->addData(data);
+        coal_->send(end_stream);
+
+        if(end_stream) {
+            cache_->deleteCoal(key_);
+        }
+    }
+
     // store the body
     if(needsToBeCached_) {
-        buffer_->add(data);
-
         if(end_stream) {
             Response response = Response(std::move(headers_), *buffer_);
             cache_->storeToCache(host_, path_, response);
         }
     }
-
-    if(coalLeader_) {
-        cache_->notifyAllData(host_ + path_, *headers_, buffer_, data, end_stream);
-    }
-    
     return Http::FilterDataStatus::Continue;
 }
 
