@@ -1,5 +1,5 @@
 Added basic http cache to Envoy proxy
-Changes on the my_cache branch
+Changes on the my_cache_filter branch
 
 
 
